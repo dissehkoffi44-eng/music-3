@@ -7,7 +7,7 @@ from collections import Counter
 import io
 import streamlit.components.v1 as components
 import requests  
-import gc                                                
+import gc                                        
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION SÉCURISÉE & SECRETS ---
@@ -192,7 +192,7 @@ def get_full_analysis(file_bytes, file_name):
 
     if not votes: return None
 
-    # Double Vérification Algorithmique (Affichage demandé)
+    # Double Vérification Algorithmique
     note_algo1, _ = analyze_segment(y_harm, sr, tuning=tuning_offset)
     note_algo2 = analyze_with_mel_logic(y_harm, sr)
     double_check = (note_algo1 == note_algo2)
@@ -251,7 +251,7 @@ def get_full_analysis(file_bytes, file_name):
         "tempo": int(float(tempo)), "timeline": timeline_data,
         "note_solide": note_solide, "solid_conf": solid_conf,
         "double_check": double_check, 
-        "algo1": note_algo1, "algo2": note_algo2, # Nouveaux champs
+        "algo1": note_algo1, "algo2": note_algo2,
         "is_cadence": is_cadence, "is_relative": is_relative,
         "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img_bytes
     }
@@ -280,16 +280,37 @@ if files:
             f_bytes = f.read()
             res = get_full_analysis(f_bytes, f.name)
             if res:
-                tg_cap = (
-                    f"🎵 *RAPPORT HARMONIQUE 95%*\n━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📄 *FICHIER* : `{res['file_name']}`\n"
-                    f"🎹 *CLÉ* : `{res['recommended']['note'].upper()}` ({get_camelot_pro(res['recommended']['note'])})\n"
-                    f"🎯 *SCORE* : `{res['recommended']['conf']}%` {res['recommended']['icon']}\n"
-                    f"💎 *SOLIDE* : `{res['note_solide'].upper()}`\n"
-                    f"🔬 *ALGO 1* : `{res['algo1'].upper()}` | *ALGO 2* : `{res['algo2'].upper()}`\n━━━━━━━━━━━━━━━━━━━━\n"
-                    f"• Tempo : `{res['tempo']} BPM` | Énergie : `{res['energy']}/10`"
-                )
+                # --- CONSTRUCTION RAPPORT TELEGRAM ULTRA-DÉTAILLÉ ---
+                status_double = "✅ MATCH PARFAIT" if res['double_check'] else "⚠️ DISCORDANCE DES ALGOS"
+                
+                report = [
+                    "🎵 *RAPPORT HARMONIQUE AVANCÉ 95%*",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                    f"📄 *FICHIER* : `{res['file_name']}`",
+                    f"⏱️ *TEMPO* : `{res['tempo']} BPM`",
+                    f"⚡ *ÉNERGIE* : `{res['energy']}/10`",
+                    "",
+                    "🏆 *DÉCISION FINALE*",
+                    f"🎹 *CLÉ* : `{res['recommended']['note'].upper()}`",
+                    f"🌀 *CAMELOT* : `{get_camelot_pro(res['recommended']['note'])}`",
+                    f"🎯 *FIABILITÉ* : `{res['recommended']['conf']}%` {res['recommended']['icon']}",
+                    "",
+                    "🔬 *AUDIT ALGORITHMIQUE*",
+                    f"💎 *SOLIDE* : `{res['note_solide'].upper()}` ({res['solid_conf']}% stable)",
+                    f"🤖 *ALGO 1 (Chroma)* : `{res['algo1'].upper()}`",
+                    f"🤖 *ALGO 2 (Mel)* : `{res['algo2'].upper()}`",
+                    f"📊 *STATUT* : `{status_double}`",
+                    "",
+                    "🎼 *MUSICALITÉ*",
+                    f"🔗 *CADENCE* : {'OUI ✅' if res['is_cadence'] else 'NON ❌'}",
+                    f"🔄 *RELATIVE* : {'OUI ✅' if res['is_relative'] else 'NON ❌'}",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                    "📡 *RCDJ228 INTELLIGENCE v3*"
+                ]
+                
+                tg_cap = "\n".join(report)
                 upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res.get("plot_img"))
+                
                 st.session_state.processed_files[fid] = res
                 st.session_state.order_list.insert(0, fid)
 
@@ -318,7 +339,6 @@ if files:
                 get_sine_witness(res["recommended"]["note"], f"rec_{fid}")
             c3.markdown(f'<div class="metric-container"><div class="label-custom">ÉNERGIE</div><div class="value-custom">{res["energy"]}/10</div></div>', unsafe_allow_html=True)
             
-            # Section Double Algo avec affichage des deux notes
             with c4:
                 status = "MATCH ✅" if res["double_check"] else "DISCORD ⚠️"
                 st.markdown(f"""
