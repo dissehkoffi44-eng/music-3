@@ -7,7 +7,7 @@ from collections import Counter
 import io
 import streamlit.components.v1 as components
 import requests  
-import gc                                               
+import gc                                                
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION SÉCURISÉE & SECRETS ---
@@ -38,6 +38,7 @@ st.markdown("""
         text-align: center;
         margin-bottom: 20px;
     }
+    .algo-detail { font-size: 0.8em; color: #AAA; margin-top: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -112,7 +113,6 @@ def analyze_segment(y, sr, tuning=0.0):
     return res_key, best_score
 
 def analyze_with_mel_logic(y_harm, sr):
-    """Deuxième algorithme basé sur la puissance spectrale (Mel)"""
     S = np.abs(librosa.stft(y_harm))
     chroma_mel = librosa.feature.chroma_stft(S=S**2, sr=sr)
     chroma_avg = np.mean(chroma_mel, axis=1)
@@ -170,7 +170,7 @@ def get_full_analysis(file_bytes, file_name):
     y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
     tuning_offset = librosa.estimate_tuning(y=y, sr=sr)
     
-    # Isolation Harmonique (Nettoyage batterie)
+    # Isolation Harmonique
     y_harm, _ = librosa.effects.hpss(y)
     
     duration = librosa.get_duration(y=y, sr=sr)
@@ -192,12 +192,12 @@ def get_full_analysis(file_bytes, file_name):
 
     if not votes: return None
 
-    # Double Vérification Algorithmique
+    # Double Vérification Algorithmique (Affichage demandé)
     note_algo1, _ = analyze_segment(y_harm, sr, tuning=tuning_offset)
     note_algo2 = analyze_with_mel_logic(y_harm, sr)
     double_check = (note_algo1 == note_algo2)
 
-    # Calcul de la note solide (Stabilité temporelle)
+    # Calcul de la note solide
     df_tl = pd.DataFrame(timeline_data)
     df_tl['is_stable'] = df_tl['Note'] == df_tl['Note'].shift(1)
     stability_scores = {}
@@ -229,11 +229,9 @@ def get_full_analysis(file_bytes, file_name):
     purity = (counts[n1] / len(votes)) * 100
     musical_score = int((purity * 0.5) + (solid_conf * 0.5) + musical_bonus)
     
-    # Ajustement final selon double check
     if double_check: musical_score = min(musical_score + 15, 100)
     else: musical_score = max(musical_score - 10, 20)
 
-    # Détermination du label et couleur
     if double_check and musical_score > 75: 
         bg, label, icon = "linear-gradient(135deg, #1D976C 0%, #93F9B9 100%)", "NOTE CERTIFIÉE (95%)", "✅"
     elif musical_score > 60: 
@@ -252,7 +250,9 @@ def get_full_analysis(file_bytes, file_name):
         "recommended": {"note": n1, "conf": musical_score, "bg": bg, "label": label, "icon": icon},
         "tempo": int(float(tempo)), "timeline": timeline_data,
         "note_solide": note_solide, "solid_conf": solid_conf,
-        "double_check": double_check, "is_cadence": is_cadence, "is_relative": is_relative,
+        "double_check": double_check, 
+        "algo1": note_algo1, "algo2": note_algo2, # Nouveaux champs
+        "is_cadence": is_cadence, "is_relative": is_relative,
         "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img_bytes
     }
     del y, y_harm; gc.collect()
@@ -285,7 +285,8 @@ if files:
                     f"📄 *FICHIER* : `{res['file_name']}`\n"
                     f"🎹 *CLÉ* : `{res['recommended']['note'].upper()}` ({get_camelot_pro(res['recommended']['note'])})\n"
                     f"🎯 *SCORE* : `{res['recommended']['conf']}%` {res['recommended']['icon']}\n"
-                    f"💎 *SOLIDE* : `{res['note_solide'].upper()}`\n━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💎 *SOLIDE* : `{res['note_solide'].upper()}`\n"
+                    f"🔬 *ALGO 1* : `{res['algo1'].upper()}` | *ALGO 2* : `{res['algo2'].upper()}`\n━━━━━━━━━━━━━━━━━━━━\n"
                     f"• Tempo : `{res['tempo']} BPM` | Énergie : `{res['energy']}/10`"
                 )
                 upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res.get("plot_img"))
@@ -316,7 +317,18 @@ if files:
                 st.markdown(f'<div class="metric-container"><div class="label-custom">AUDITION</div></div>', unsafe_allow_html=True)
                 get_sine_witness(res["recommended"]["note"], f"rec_{fid}")
             c3.markdown(f'<div class="metric-container"><div class="label-custom">ÉNERGIE</div><div class="value-custom">{res["energy"]}/10</div></div>', unsafe_allow_html=True)
-            c4.metric("DOUBLE ALGO", "MATCH ✅" if res["double_check"] else "DISCORD ⚠️")
+            
+            # Section Double Algo avec affichage des deux notes
+            with c4:
+                status = "MATCH ✅" if res["double_check"] else "DISCORD ⚠️"
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <div class="label-custom">DOUBLE ALGO</div>
+                        <div style="font-size:1.2em; font-weight:bold; color:{'#93F9B9' if res['double_check'] else '#FF512F'}">{status}</div>
+                        <div class="algo-detail">A1 (Chroma): {res['algo1'].upper()}</div>
+                        <div class="algo-detail">A2 (Mel): {res['algo2'].upper()}</div>
+                    </div>
+                """, unsafe_allow_html=True)
 
             df_tl = pd.DataFrame(res['timeline'])
             fig = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark", title="Analyse de Stabilité Harmonique")
