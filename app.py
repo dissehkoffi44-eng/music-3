@@ -6,8 +6,8 @@ import plotly.express as px
 from collections import Counter
 import io
 import streamlit.components.v1 as components
-import requests  
-import gc                                         
+import requests                                          
+import gc                                                
 from scipy.signal import butter, lfilter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -164,7 +164,7 @@ def get_sine_witness(note_mode_str, key_suffix=""):
     }};</script>
     """, height=40)
 
-@st.cache_data(show_spinner="Analyse PRO en cours...", max_entries=10)
+@st.cache_data(show_spinner=False, max_entries=10)
 def get_full_analysis(file_bytes, file_name):
     y_raw, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
     y = apply_bandpass_filter(y_raw, sr)
@@ -233,7 +233,7 @@ def get_full_analysis(file_bytes, file_name):
         "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
         "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img,
-        "duration": duration # Ajouté pour le rapport
+        "duration": duration 
     }
     del y_raw, y, y_harm; gc.collect()
     return res
@@ -245,6 +245,7 @@ with st.sidebar:
     st.header("⚙️ SYSTÈME")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
+        st.session_state.order_list = []
         st.cache_data.clear()
         st.rerun()
 
@@ -256,13 +257,22 @@ tabs = st.tabs(["🚀 ANALYSEUR", "📜 HISTORIQUE"])
 
 with tabs[0]:
     if files:
-        for f in reversed(files):
+        progress_text = st.empty()
+        global_bar = st.progress(0)
+        
+        # On traite les fichiers un par un pour ne pas saturer la RAM
+        for index, f in enumerate(files):
             fid = f"{f.name}_{f.size}"
+            
             if fid not in st.session_state.processed_files:
+                progress_text.text(f"⏳ Analyse de {f.name} ({index+1}/{len(files)})...")
+                
+                # Lecture et analyse immédiate
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
+                
                 if res:
-                    # --- CONSTRUCTION DU RAPPORT DÉTAILLÉ ICI ---
+                    # Rapport Telegram
                     tg_cap = (
                         f"🎧 *RAPPORT PRO RCDJ228*\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -277,22 +287,34 @@ with tabs[0]:
                         f"━━━━━━━━━━━━━━━━━━━━"
                     )
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
+                    
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
+                
+                # Nettoyage mémoire après chaque fichier
+                del f_bytes
+                gc.collect()
+            
+            global_bar.progress((index + 1) / len(files))
+        
+        progress_text.empty()
+        global_bar.empty()
 
+        # Affichage des résultats stockés
         for fid in st.session_state.order_list:
-            res = st.session_state.processed_files[fid]
-            with st.expander(f"📊 {res['file_name']}", expanded=True):
-                st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE: {res["note_solide"]} ({res["solid_conf"]}% de confiance temporelle)</div>', unsafe_allow_html=True)
-                
-                c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
-                with c2: get_sine_witness(res["recommended"]["note"], fid)
-                with c3: st.markdown(f'<div class="metric-container">COHÉRENCE<br><div class="value-custom">{res["recommended"]["conf"]}%</div></div>', unsafe_allow_html=True)
-                with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
-                
-                st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", template="plotly_dark").update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER}), use_container_width=True)
+            if fid in st.session_state.processed_files:
+                res = st.session_state.processed_files[fid]
+                with st.expander(f"📊 {res['file_name']}", expanded=True):
+                    st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE: {res["note_solide"]} ({res["solid_conf"]}% de confiance temporelle)</div>', unsafe_allow_html=True)
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
+                    with c2: get_sine_witness(res["recommended"]["note"], fid)
+                    with c3: st.markdown(f'<div class="metric-container">COHÉRENCE<br><div class="value-custom">{res["recommended"]["conf"]}%</div></div>', unsafe_allow_html=True)
+                    with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
+                    
+                    st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", template="plotly_dark").update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER}), use_container_width=True)
 
 with tabs[1]:
     if st.session_state.processed_files:
