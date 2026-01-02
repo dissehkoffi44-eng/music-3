@@ -7,7 +7,7 @@ from collections import Counter
 import io
 import streamlit.components.v1 as components
 import requests  
-import gc                                               
+import gc                                                
 from scipy.signal import butter, lfilter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "7751365982:AAFLbeRoPsDx5OyIOl
 CHAT_ID = st.secrets.get("CHAT_ID", "-1003602454394")
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="RCDJ228 HARMONIC 3", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="RCDJ228 HARMONIC 3 PRO", page_icon="🎧", layout="wide")
 
 # --- STYLES CSS ---
 st.markdown("""
@@ -55,6 +55,14 @@ PROFILES = {
 
 # --- FONCTIONS LOGIQUES ---
 
+def apply_bandpass_filter(y, sr, lowcut=100, highcut=3000):
+    """Supprime les bruits extrêmes (kicks profonds et cymbales aiguës)"""
+    nyq = 0.5 * sr
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(4, [low, high], btype='band')
+    return lfilter(b, a, y)
+
 def get_camelot_pro(key_mode_str):
     try:
         parts = key_mode_str.split(" ")
@@ -64,7 +72,6 @@ def get_camelot_pro(key_mode_str):
     except: return "??"
 
 def validate_coherence(chroma_avg, proposed_key):
-    """L'oreille interne : compare l'empreinte réelle au profil idéal."""
     try:
         parts = proposed_key.split(" ")
         note_name, mode = parts[0], parts[1].lower()
@@ -105,6 +112,20 @@ def upload_to_telegram(file_buffer, filename, caption, plot_bytes=None):
             requests.post(url_photo, files={'photo': ('graph.png', plot_bytes)}, data={'chat_id': CHAT_ID}, timeout=30)
         return response.get("ok", False)
     except: return False
+
+def analyze_segment_pro(y_seg, sr, tuning):
+    # Correction : Utilisation de CENS pour plus de stabilité harmonique
+    chroma = librosa.feature.chroma_cens(y=y_seg, sr=sr, bins_per_octave=36)
+    chroma_avg = np.mean(chroma, axis=1)
+    rms = np.mean(librosa.feature.rms(y=y_seg))
+    
+    best_score, res_key = -1, ""
+    for mode, profile in PROFILES.items():
+        for i in range(12):
+            score = np.corrcoef(chroma_avg, np.roll(profile, i))[0, 1]
+            if score > best_score:
+                best_score, res_key = score, f"{NOTES_LIST[i]} {mode}"
+    return res_key, best_score, rms
 
 def get_sine_witness(note_mode_str, key_suffix=""):
     if note_mode_str == "N/A": return ""
@@ -147,28 +168,22 @@ def get_sine_witness(note_mode_str, key_suffix=""):
     </script>
     """, height=40)
 
-def analyze_segment_pro(y_seg, sr, tuning):
-    chroma = librosa.feature.chroma_cqt(y=y_seg, sr=sr, tuning=tuning)
-    chroma_avg = np.mean(chroma, axis=1)
-    rms = np.mean(librosa.feature.rms(y=y_seg))
-    
-    best_score, res_key = -1, ""
-    for mode, profile in PROFILES.items():
-        for i in range(12):
-            score = np.corrcoef(chroma_avg, np.roll(profile, i))[0, 1]
-            if score > best_score:
-                best_score, res_key = score, f"{NOTES_LIST[i]} {mode}"
-    return res_key, best_score, rms
-
-@st.cache_data(show_spinner="Analyse Harmonique Haute Précision...", max_entries=10)
+@st.cache_data(show_spinner="Analyse PRO en cours...", max_entries=10)
 def get_full_analysis(file_bytes, file_name):
-    y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
+    y_raw, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
+    
+    # 1. Filtrage Passe-Bande (Nettoyage)
+    y = apply_bandpass_filter(y_raw, sr)
+    
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_harm = librosa.effects.harmonic(y, margin=3.0)
     duration = librosa.get_duration(y=y, sr=sr)
     
-    # Empreinte globale pour l'auto-vérification
-    chroma_global = np.mean(librosa.feature.chroma_cqt(y=y_harm, sr=sr, tuning=tuning), axis=1)
+    # 2. Focus Central (ignore 15% début/fin pour l'empreinte globale)
+    start_cut = int(duration * 0.15)
+    end_cut = int(duration * 0.85)
+    y_center = y_harm[int(start_cut*sr):int(end_cut*sr)]
+    chroma_global = np.mean(librosa.feature.chroma_cens(y=y_center, sr=sr), axis=1)
     
     step = 6 
     segments_data = []
@@ -177,14 +192,19 @@ def get_full_analysis(file_bytes, file_name):
         segments_data.append((y_seg, sr, tuning, start_t))
 
     timeline_data = []
-    votes_weighted = []
     
     with ThreadPoolExecutor() as executor:
         results = list(executor.map(lambda x: (analyze_segment_pro(x[0], x[1], x[2]), x[3]), segments_data))
 
-    for (res_key, score, rms), start_t in results:
-        weight = int(rms * 100) + 1
-        votes_weighted.extend([res_key] * weight)
+    # 3. Vote pondéré avec Bonus de Stabilité Temporelle
+    refined_votes = []
+    for i, ((res_key, score, rms), start_t) in enumerate(results):
+        weight = int(rms * 100) + 5
+        # Bonus si la note est identique au segment précédent
+        if i > 0 and res_key == results[i-1][0][0]:
+            weight = int(weight * 1.5)
+            
+        refined_votes.extend([res_key] * weight)
         timeline_data.append({
             "Temps": start_t, "Note": res_key, 
             "Camelot": get_camelot_pro(res_key), "Confiance": round(float(score)*100, 1)
@@ -193,36 +213,33 @@ def get_full_analysis(file_bytes, file_name):
     if not timeline_data: return None
     df_tl = pd.DataFrame(timeline_data)
     
-    counts = Counter(votes_weighted)
+    counts = Counter(refined_votes)
     n1 = counts.most_common(1)[0][0]
     n2 = counts.most_common(2)[1][0] if len(counts) > 1 else n1
     
-    # --- SYSTÈME D'AUTO-CORRECTION (L'oreille humaine) ---
+    # Auto-correction
     score_n1 = validate_coherence(chroma_global, n1)
     score_n2 = validate_coherence(chroma_global, n2)
     note_solide = df_tl['Note'].mode()[0]
     score_solide = validate_coherence(chroma_global, note_solide)
 
-    # Si la note n1 est moins cohérente que la note solide ou n2, on corrige
-    if score_solide > score_n1 + 0.1:
-        n1 = note_solide
-    elif score_n2 > score_n1 + 0.1:
-        n1 = n2
+    if score_solide > score_n1 + 0.1: n1 = note_solide
+    elif score_n2 > score_n1 + 0.1: n1 = n2
         
     is_rel, rel_pref = detect_relative_key(n1, n2)
     if is_rel: n1 = rel_pref
     is_cad, cad_root = detect_perfect_cadence(n1, n2)
     if is_cad: n1 = cad_root
 
-    solid_conf = int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean())
     final_coherence = validate_coherence(chroma_global, n1)
     musical_score = int(final_coherence * 100)
 
-    # Dynamisation du background selon certitude
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if musical_score > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
-    if musical_score < 60: bg = "linear-gradient(135deg, #e67e22, #f1c40f)" # Orange si douteux
+    if musical_score < 60: bg = "linear-gradient(135deg, #e67e22, #f1c40f)"
 
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
+    
+    # Graphique pour Telegram
     fig_tg = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark")
     fig_tg.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
     plot_img = fig_tg.to_image(format="png", width=800, height=400)
@@ -230,15 +247,15 @@ def get_full_analysis(file_bytes, file_name):
     res = {
         "file_name": file_name, "tempo": int(float(tempo)),
         "recommended": {"note": n1, "conf": musical_score, "bg": bg},
-        "note_solide": note_solide, "solid_conf": solid_conf,
+        "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
         "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img
     }
-    del y, y_harm; gc.collect()
+    del y_raw, y, y_harm; gc.collect()
     return res
 
 # --- INTERFACE ---
-st.title("🎧 RCDJ228 HARMONIC 3")
+st.title("🎧 RCDJ228 HARMONIC 3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
