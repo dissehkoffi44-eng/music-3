@@ -1,3 +1,4 @@
+kaleido==0.1.0post1
 streamlit
 librosa
 numpy
@@ -5,4 +6,3 @@ pandas
 plotly
 requests
 scipy
-kaleido==0.1.0post1
