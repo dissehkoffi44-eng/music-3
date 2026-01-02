@@ -7,7 +7,7 @@ from collections import Counter
 import io
 import streamlit.components.v1 as components
 import requests  
-import gc                                                
+import gc                                         
 from scipy.signal import butter, lfilter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "7751365982:AAFLbeRoPsDx5OyIOl
 CHAT_ID = st.secrets.get("CHAT_ID", "-1003602454394")
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="RCDJ228 Hkey 3 PRO", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="RCDJ228 Mkey 3 PRO", page_icon="🎧", layout="wide")
 
 # --- STYLES CSS ---
 st.markdown("""
@@ -56,7 +56,6 @@ PROFILES = {
 # --- FONCTIONS LOGIQUES ---
 
 def apply_bandpass_filter(y, sr, lowcut=100, highcut=3000):
-    """Supprime les bruits extrêmes (kicks profonds et cymbales aiguës)"""
     nyq = 0.5 * sr
     low = lowcut / nyq
     high = highcut / nyq
@@ -114,11 +113,9 @@ def upload_to_telegram(file_buffer, filename, caption, plot_bytes=None):
     except: return False
 
 def analyze_segment_pro(y_seg, sr, tuning):
-    # Correction : Utilisation de CENS pour plus de stabilité harmonique
     chroma = librosa.feature.chroma_cens(y=y_seg, sr=sr, bins_per_octave=36)
     chroma_avg = np.mean(chroma, axis=1)
     rms = np.mean(librosa.feature.rms(y=y_seg))
-    
     best_score, res_key = -1, ""
     for mode, profile in PROFILES.items():
         for i in range(12):
@@ -164,22 +161,17 @@ def get_sine_witness(note_mode_str, key_suffix=""):
             }});
             setTimeout(() => {{ this.innerText = '▶'; this.style.background = '#6366F1'; activeNodes = []; }}, 2500);
         }}
-    }};
-    </script>
+    }};</script>
     """, height=40)
 
 @st.cache_data(show_spinner="Analyse PRO en cours...", max_entries=10)
 def get_full_analysis(file_bytes, file_name):
     y_raw, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
-    
-    # 1. Filtrage Passe-Bande (Nettoyage)
     y = apply_bandpass_filter(y_raw, sr)
-    
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_harm = librosa.effects.harmonic(y, margin=3.0)
     duration = librosa.get_duration(y=y, sr=sr)
     
-    # 2. Focus Central (ignore 15% début/fin pour l'empreinte globale)
     start_cut = int(duration * 0.15)
     end_cut = int(duration * 0.85)
     y_center = y_harm[int(start_cut*sr):int(end_cut*sr)]
@@ -192,18 +184,14 @@ def get_full_analysis(file_bytes, file_name):
         segments_data.append((y_seg, sr, tuning, start_t))
 
     timeline_data = []
-    
     with ThreadPoolExecutor() as executor:
         results = list(executor.map(lambda x: (analyze_segment_pro(x[0], x[1], x[2]), x[3]), segments_data))
 
-    # 3. Vote pondéré avec Bonus de Stabilité Temporelle
     refined_votes = []
     for i, ((res_key, score, rms), start_t) in enumerate(results):
         weight = int(rms * 100) + 5
-        # Bonus si la note est identique au segment précédent
         if i > 0 and res_key == results[i-1][0][0]:
             weight = int(weight * 1.5)
-            
         refined_votes.extend([res_key] * weight)
         timeline_data.append({
             "Temps": start_t, "Note": res_key, 
@@ -212,12 +200,10 @@ def get_full_analysis(file_bytes, file_name):
 
     if not timeline_data: return None
     df_tl = pd.DataFrame(timeline_data)
-    
     counts = Counter(refined_votes)
     n1 = counts.most_common(1)[0][0]
     n2 = counts.most_common(2)[1][0] if len(counts) > 1 else n1
     
-    # Auto-correction
     score_n1 = validate_coherence(chroma_global, n1)
     score_n2 = validate_coherence(chroma_global, n2)
     note_solide = df_tl['Note'].mode()[0]
@@ -233,13 +219,10 @@ def get_full_analysis(file_bytes, file_name):
 
     final_coherence = validate_coherence(chroma_global, n1)
     musical_score = int(final_coherence * 100)
-
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if musical_score > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
     if musical_score < 60: bg = "linear-gradient(135deg, #e67e22, #f1c40f)"
 
     tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
-    
-    # Graphique pour Telegram
     fig_tg = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark")
     fig_tg.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
     plot_img = fig_tg.to_image(format="png", width=800, height=400)
@@ -249,13 +232,14 @@ def get_full_analysis(file_bytes, file_name):
         "recommended": {"note": n1, "conf": musical_score, "bg": bg},
         "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
-        "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img
+        "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img,
+        "duration": duration # Ajouté pour le rapport
     }
     del y_raw, y, y_harm; gc.collect()
     return res
 
 # --- INTERFACE ---
-st.title("🎧 RCDJ228 Hkey 3 PRO")
+st.title("🎧 RCDJ228 Mkey 3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
@@ -278,7 +262,20 @@ with tabs[0]:
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
                 if res:
-                    tg_cap = f"🎵 *RAPPORT PRO*\n📄 `{res['file_name']}`\n🎹 `{res['recommended']['note'].upper()}` ({get_camelot_pro(res['recommended']['note'])})\n🎯 Fidélité: {res['recommended']['conf']}%"
+                    # --- CONSTRUCTION DU RAPPORT DÉTAILLÉ ICI ---
+                    tg_cap = (
+                        f"🎧 *RAPPORT PRO RCDJ228*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📄 `{res['file_name']}`\n"
+                        f"⏱ `{int(res['duration'])}s` | 🥁 `{res['tempo']} BPM`\n\n"
+                        f"🎹 CLÉ : `{res['recommended']['note'].upper()}`\n"
+                        f"🎼 CAMELOT : `{get_camelot_pro(res['recommended']['note'])}`\n"
+                        f"🎯 FIDÉLITÉ : `{res['recommended']['conf']}%`\n\n"
+                        f"💎 NOTE STABLE : `{res['note_solide']}`\n"
+                        f"└ Confiance : `{res['solid_conf']}%`\n"
+                        f"└ Cadence : `{'OUI' if res['is_cadence'] else 'NON'}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━"
+                    )
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
