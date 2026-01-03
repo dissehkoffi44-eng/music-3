@@ -15,7 +15,7 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "7751365982:AAFLbeRoPsDx5OyIOl
 CHAT_ID = st.secrets.get("CHAT_ID", "-1003602454394")
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="RCDJ228 Mkey 3", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="RCDJ228 Mkey 3 PRO", page_icon="🎧", layout="wide")
 
 # --- STYLES CSS ---
 st.markdown("""
@@ -145,7 +145,7 @@ def get_sine_witness(note_mode_str, key_suffix=""):
     }};
     </script>""", height=40)
 
-# --- COEUR DE L'ANALYSE (OPTIMISATION RAM) ---
+# --- COEUR DE L'ANALYSE ---
 
 @st.cache_data(show_spinner=False, max_entries=5)
 def get_full_analysis(file_bytes, file_name):
@@ -197,26 +197,41 @@ def get_full_analysis(file_bytes, file_name):
     
     df_tl = pd.DataFrame(timeline_data)
     
-    # --- DÉTERMINATION DE LA NOTE SOLIDE OPTIMISÉE ---
-    # On filtre les segments avec énergie suffisante (>0.01) et bonne confiance (>60%)
-    df_fiable = df_tl[(df_tl['Confiance'] > 60) & (df_tl['RMS'] > 0.01)]
+    # --- DÉTERMINATION DE LA NOTE SOLIDE (INTERPRÉTATION DU GRAPHIQUE) ---
+    # On filtre les segments fiables (bonne confiance et présence de signal)
+    df_fiable = df_tl[(df_tl['Confiance'] > 65) & (df_tl['RMS'] > 0.01)]
+    
     if not df_fiable.empty:
+        # La note solide est la valeur la plus fréquente sur le graphique (le Mode)
         note_solide = df_fiable['Note'].mode()[0]
+        occupation_graphique = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100
     else:
         note_solide = df_tl['Note'].mode()[0]
+        occupation_graphique = 0
         
-    n1 = weighted_scores.most_common(1)[0][0]
-    n2 = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1
+    # Note dominante via énergie globale (historique)
+    n1_global = weighted_scores.most_common(1)[0][0]
+    n2_global = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     
-    score_n1 = validate_coherence(chroma_global, n1)
+    # --- ARBITRAGE FINAL : INTÉGRATION DU GRAPHIQUE ---
+    score_global = validate_coherence(chroma_global, n1_global)
     score_solide = validate_coherence(chroma_global, note_solide)
-    if score_solide > score_n1 + 0.1: n1 = note_solide
     
-    is_rel, rel_pref = detect_relative_key(n1, n2)
-    if is_rel: n1 = rel_pref
-    is_cad, cad_root = detect_perfect_cadence(n1, n2)
-    if is_cad: n1 = cad_root
+    # Si la note solide (graphique) est très présente (>30% du temps) ou plus cohérente, elle devient le choix principal
+    if occupation_graphique > 30 or score_solide > (score_global - 0.05):
+        final_decision = note_solide
+    else:
+        final_decision = n1_global
+        
+    # --- VÉRIFICATIONS MUSICALES (RELATIVES & CADENCES) ---
+    is_rel, rel_pref = detect_relative_key(final_decision, n1_global if final_decision != n1_global else n2_global)
+    if is_rel: final_decision = rel_pref
+    
+    is_cad, cad_root = detect_perfect_cadence(final_decision, n1_global)
+    if is_cad: final_decision = cad_root
 
+    # Préparation des résultats
+    n1 = final_decision
     final_conf = int(validate_coherence(chroma_global, n1) * 100)
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if final_conf > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
     
@@ -229,7 +244,8 @@ def get_full_analysis(file_bytes, file_name):
     res = {
         "file_name": file_name, "tempo": int(float(tempo)),
         "recommended": {"note": n1, "conf": final_conf, "bg": bg},
-        "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
+        "note_solide": note_solide, 
+        "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
         "duration": duration, "plot_img": plot_img, "intro_type": intro_type,
         "tuning": round(tuning, 2)
@@ -237,8 +253,8 @@ def get_full_analysis(file_bytes, file_name):
     del y_raw, y, y_harm; gc.collect()
     return res
 
-# --- INTERFACE ---
-st.title("🎧 RCDJ228 Mkey 3")
+# --- INTERFACE STREAMLIT ---
+st.title("🎧 RCDJ228 Mkey 3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
@@ -267,26 +283,22 @@ with tabs[0]:
                 res = get_full_analysis(f_bytes, f.name)
                 
                 if res:
-                    # --- RAPPORT TELEGRAM DÉTAILLÉ ---
+                    # Rapport Telegram
                     tg_cap = (
-                        f"🚀 *NOUVELLE ANALYSE TERMINÉE*\n"
+                        f"🚀 *ANALYSE TERMINÉE (MODE GRAPHIQUE)*\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📁 *Fichier :* `{res['file_name']}`\n"
                         f"⏱ *Durée :* `{int(res['duration'])}s` | 🥁 *Tempo :* `{res['tempo']} BPM`\n"
-                        f"🎸 *Accordage :* `{res['tuning']} Hz`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💎 *RÉSULTAT PRINCIPAL*\n"
-                        f"🎹 *Clé recommandée :* `{res['recommended']['note'].upper()}`\n"
-                        f"🎼 *Système Camelot :* `{get_camelot_pro(res['recommended']['note'])}`\n"
-                        f"🎯 *Indice de Fidélité :* `{res['recommended']['conf']}%`\n"
+                        f"💎 *DÉCISION FINALE*\n"
+                        f"🎹 *Clé :* `{res['recommended']['note'].upper()}`\n"
+                        f"🎼 *Camelot :* `{get_camelot_pro(res['recommended']['note'])}`\n"
+                        f"🎯 *Confiance :* `{res['recommended']['conf']}%`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔍 *DÉTAILS TECHNIQUES*\n"
-                        f"✨ *Note la plus stable :* `{res['note_solide']}`\n"
-                        f"🚩 *Type d'introduction :* `{res['intro_type']}`\n"
-                        f"🔄 *Tonalité Relative :* `{'OUI ✅' if res['is_relative'] else 'NON ❌'}`\n"
-                        f"🎼 *Cadence Parfaite :* `{'DÉTECTÉE 🎯' if res['is_cadence'] else 'AUCUNE'}`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🎧 *Généré par RCDJ228 Hkey 3 PRO*"
+                        f"🔍 *STABILITÉ GRAPHIQUE*\n"
+                        f"✨ *Note Solide :* `{res['note_solide']}`\n"
+                        f"🔄 *Relative :* `{'OUI ✅' if res['is_relative'] else 'NON ❌'}`\n"
+                        f"🎧 *RCDJ228 Hkey 3 PRO*"
                     )
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
                     
@@ -306,14 +318,15 @@ with tabs[0]:
             if res:
                 with st.expander(f"📊 {res['file_name']}", expanded=True):
                     st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE: {res["note_solide"]} ({res["solid_conf"]}% de confiance)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE DU GRAPHIQUE: {res["note_solide"]} ({res["solid_conf"]}% de confiance)</div>', unsafe_allow_html=True)
                     
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
                     with c2: get_sine_witness(res["recommended"]["note"], fid)
-                    with c3: st.markdown(f'<div class="metric-container">COHÉRENCE<br><div class="value-custom">{res["recommended"]["conf"]}%</div></div>', unsafe_allow_html=True)
+                    with c3: st.markdown(f'<div class="metric-container">TUNING<br><div class="value-custom">{res["tuning"]} Hz</div></div>', unsafe_allow_html=True)
                     with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
                     
+                    # Affichage graphique Plotly
                     st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", template="plotly_dark").update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER}), use_container_width=True)
 
 with tabs[1]:
