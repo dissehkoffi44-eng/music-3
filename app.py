@@ -42,8 +42,6 @@ PROFILES = {
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: white; }
-    
-    /* Conteneur de métrique unifié */
     .metric-container { 
         background: #1a1c24; 
         padding: 15px; 
@@ -57,24 +55,17 @@ st.markdown("""
         transition: 0.3s;
     }
     .metric-container:hover { border-color: #FFFFFF; }
-    
     .metric-label { font-size: 0.8em; color: #888; letter-spacing: 1px; margin-bottom: 5px; text-transform: uppercase; }
     .value-custom { font-size: 1.8em; font-weight: 800; color: #FFFFFF; }
-    
-    /* Box de décision finale */
     .final-decision-box { 
-    padding: 40px; 
-    border-radius: 25px; 
-    text-align: center; 
-    margin: 15px 0; 
-    border: 1px solid rgba(255,255,255,0.1); 
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    /* Modifiez la couleur ici si vous ne voulez pas qu'elle soit dynamique */
-    background: #2ecc71; 
-    color: white; /* Force le texte en blanc */
-}
-    
-    /* Tags des profils */
+        padding: 40px; 
+        border-radius: 25px; 
+        text-align: center; 
+        margin: 15px 0; 
+        border: 1px solid rgba(255,255,255,0.1); 
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        color: white;
+    }
     .profile-tag { 
         background: rgba(99, 102, 241, 0.1); 
         color: #a5b4fc;
@@ -85,8 +76,6 @@ st.markdown("""
         display: inline-block;
         border: 1px solid rgba(99, 102, 241, 0.3);
     }
-    
-    /* Ajustement de l'expander */
     .streamlit-expanderHeader { background-color: #1a1c24 !important; border-radius: 10px !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -100,9 +89,14 @@ def apply_perceptual_filter(y, sr):
     return lfilter(b, a, y)
 
 def get_enhanced_chroma(y, sr, tuning):
-    y_harm = librosa.effects.harmonic(y, margin=4.0)
-    chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr, tuning=tuning, n_chroma=12, bins_per_octave=24)
+    y_harm = librosa.effects.harmonic(y, margin=6.0)
+    chroma = librosa.feature.chroma_cqt(
+        y=y_harm, sr=sr, tuning=tuning, 
+        n_chroma=12, bins_per_octave=36, 
+        fmin=librosa.note_to_hz('C2')
+    )
     chroma = librosa.decompose.nn_filter(chroma, aggregate=np.median, metric='cosine')
+    chroma = np.power(chroma, 2.0) 
     return chroma
 
 def solve_key_logic(chroma_vector):
@@ -118,6 +112,7 @@ def solve_key_logic(chroma_vector):
                 note_str = f"{NOTES_LIST[i]} {mode}"
                 if score > p_max:
                     p_max, p_note = score, note_str
+                
                 total_score = score * 1.2 if p_name == "bellman" else score
                 if total_score > best_score:
                     best_score, best_root, best_mode, best_key = total_score, i, mode, note_str
@@ -127,7 +122,6 @@ def solve_key_logic(chroma_vector):
 def get_camelot(key_str):
     try:
         n, m = key_str.split(" ")
-        # On s'assure que le Camelot est bien reconnu (F# Minor = 11A)
         return BASE_CAMELOT_MINOR.get(n, "??") if m == 'minor' else BASE_CAMELOT_MAJOR.get(n, "??")
     except: return "??"
 
@@ -174,8 +168,10 @@ def process_audio(file_bytes, file_name):
         for start in range(0, int(duration) - step, step):
             y_seg = y_filt[int(start*sr):int((start+step)*sr)]
             if np.max(np.abs(y_seg)) < 0.01: continue 
+            
             chroma = get_enhanced_chroma(y_seg, sr, tuning)
             res = solve_key_logic(np.mean(chroma, axis=1))
+            
             weight = int(res['score'] * 100)
             votes[res['key']] += weight
             timeline.append({"Temps": start, "Note": res['key'], "Conf": round(res['score']*100, 1)})
@@ -189,16 +185,30 @@ def process_audio(file_bytes, file_name):
         full_chroma = get_enhanced_chroma(y, sr, tuning)
         final_details = solve_key_logic(np.mean(full_chroma, axis=1))
 
-        # Préparation du graphique pour Telegram
+        # Graphique optimisé pour Telegram (Style Image Demandé)
         df_tl = pd.DataFrame(timeline)
-        fig = px.line(df_tl, x="Temps", y="Note", markers=True, category_orders={"Note": NOTES_ORDER}, template="plotly_dark")
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
+        fig = px.line(df_tl, x="Temps", y="Note", markers=True, 
+                      category_orders={"Note": NOTES_ORDER}, 
+                      title=f"Stabilité: {file_name}",
+                      template="plotly_dark")
+        
+        fig.update_layout(
+            paper_bgcolor='#0e1117', 
+            plot_bgcolor='#0e1117', 
+            margin=dict(l=60, r=30, t=80, b=50),
+            title_font_size=20,
+            xaxis_title="Temps",
+            yaxis_title="Note",
+            font_color="white"
+        )
+        fig.update_xaxes(showgrid=True, gridcolor='#333')
+        fig.update_yaxes(showgrid=True, gridcolor='#333')
 
         output = {
             "name": file_name, "tempo": int(float(tempo)), "tuning": round(tuning, 2),
             "key": final_key, "camelot": get_camelot(final_key), "conf": avg_conf,
             "details": final_details['details'], "timeline": timeline,
-            "plot": fig.to_image(format="png", width=1000, height=450)
+            "plot": fig.to_image(format="png", width=1000, height=500)
         }
         del y, y_filt; gc.collect()
         return output
@@ -221,11 +231,10 @@ if uploaded_files:
             continue
 
         with st.expander(f"📊 ANALYSE : {res['name']}", expanded=True):
-            # Zone de résultat principale
             bg_grad = "linear-gradient(135deg, #1e3a8a, #581c87)" if res['conf'] > 70 else "linear-gradient(135deg, #334155, #0f172a)"
             st.markdown(f"""
                 <div class="final-decision-box" style="background:{bg_grad};">
-                    <p style="margin:0; opacity:0.8; letter-spacing:3px; font-weight:300;">TONALITÉ DÉTECTÉE</p>
+                    <p style="margin:0; opacity:0.8; letter-spacing:3px; font-weight:300;">TONALITÉ DÉTECTÉE (PONDÉRÉE)</p>
                     <h1 style="font-size:5.5em; margin:10px 0; font-weight:900; line-height:1;">{res['key']}</h1>
                     <p style="margin:0; font-size:1.5em; font-weight:600; opacity:0.9;">
                         CAMELOT: {res['camelot']} <span style="margin:0 20px; opacity:0.3;">|</span> CONFIANCE: {res['conf']}%
@@ -233,7 +242,6 @@ if uploaded_files:
                 </div>
             """, unsafe_allow_html=True)
             
-            # Colonnes de métriques
             c1, c2, c3 = st.columns([1, 1, 1])
             with c1: 
                 st.markdown(f"""
@@ -250,21 +258,32 @@ if uploaded_files:
                 tags_html = "".join([f"<span class='profile-tag'>{p}: {v}</span>" for p, v in res['details'].items()])
                 st.markdown(f"""
                     <div class="metric-container">
-                        <div class="metric-label">Profils d'algorithmes</div>
+                        <div class="metric-label">Stabilité Algorithmique</div>
                         <div style="margin-top:5px;">{tags_html}</div>
                     </div>
                 """, unsafe_allow_html=True)
             
-            # Graphique de stabilité
             st.markdown("### 📈 Stabilité de la tonalité")
             fig_ui = px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", markers=True, 
                             category_orders={"Note": NOTES_ORDER}, template="plotly_dark")
             fig_ui.update_layout(height=350, margin=dict(l=0,r=0,t=20,b=0))
             st.plotly_chart(fig_ui, use_container_width=True)
 
-            # Envoi Telegram
+            # Envoi Telegram Enrichi
             try:
-                cap = f"🎧 *RAPPORT PRO*\n📂 `{res['name']}`\n🎹 *{res['key']}* ({res['camelot']})\n🔥 Confiance: `{res['conf']}%`"
+                details_text = "\n".join([f"• *{p.capitalize()}*: `{v}`" for p, v in res['details'].items()])
+                cap = (
+                    f"🎧 *RAPPORT PRO M3*\n"
+                    f"📂 `{res['name']}`\n\n"
+                    f"🎹 *TONALITÉ : {res['key']}*\n"
+                    f"🎼 Camelot : `{res['camelot']}`\n"
+                    f"🔥 Confiance : `{res['conf']}%`\n\n"
+                    f"⏱ *METRICS :*\n"
+                    f"• BPM : `{res['tempo']}`\n"
+                    f"• Tuning : `{res['tuning']} Hz`\n\n"
+                    f"🔬 *DÉTAILS ALGORITHMES :*\n"
+                    f"{details_text}"
+                )
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", 
                              files={'photo': res['plot']}, data={'chat_id': CHAT_ID, 'caption': cap, 'parse_mode': 'Markdown'})
             except: pass
