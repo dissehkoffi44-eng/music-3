@@ -23,7 +23,7 @@ BASE_CAMELOT_MAJOR = {'B':'1B','F#':'2B','Gb':'2B','Db':'3B','C#':'3B','Ab':'4B'
 NOTES_LIST = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 NOTES_ORDER = [f"{n} {m}" for n in NOTES_LIST for m in ['major', 'minor']]
 
-# --- PROFILS HARMONIQUES MULTIPLES (Vérification Croisée) ---
+# Profils Harmoniques
 PROFILES = {
     "krumhansl": {
         "major": [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
@@ -69,32 +69,36 @@ def get_camelot_pro(key_mode_str):
 def solve_key(chroma_avg):
     best_score, best_key, best_root, best_mode = -1, "", 0, "major"
     
-    # Analyse par consensus entre les 3 profils
+    # Pour stocker les gagnants individuels de chaque profil
+    profile_winners = {"krumhansl": "", "temperley": "", "bellman": ""}
+    scores_k, scores_t, scores_b = {}, {}, {}
+
     for mode in ["major", "minor"]:
         for i in range(12):
-            # Calcul de corrélation pour chaque méthode
-            s_krum = np.corrcoef(chroma_avg, np.roll(PROFILES["krumhansl"][mode], i))[0, 1]
-            s_temp = np.corrcoef(chroma_avg, np.roll(PROFILES["temperley"][mode], i))[0, 1]
-            s_bell = np.corrcoef(chroma_avg, np.roll(PROFILES["bellman"][mode], i))[0, 1]
+            k = np.corrcoef(chroma_avg, np.roll(PROFILES["krumhansl"][mode], i))[0, 1]
+            t = np.corrcoef(chroma_avg, np.roll(PROFILES["temperley"][mode], i))[0, 1]
+            b = np.corrcoef(chroma_avg, np.roll(PROFILES["bellman"][mode], i))[0, 1]
             
-            # Moyenne pondérée du score
-            avg_score = (s_krum + s_temp + s_bell) / 3
+            note_name = f"{NOTES_LIST[i]} {mode}"
+            scores_k[note_name] = k
+            scores_t[note_name] = t
+            scores_b[note_name] = b
             
+            avg_score = (k + t + b) / 3
             if avg_score > best_score:
-                best_score = avg_score
-                best_root = i
-                best_mode = mode
-                best_key = f"{NOTES_LIST[i]} {mode}"
-                
-    return {"key": best_key, "score": best_score, "root": best_root, "mode": best_mode}
+                best_score, best_root, best_mode, best_key = avg_score, i, mode, note_name
+
+    # Récupérer les notes max par profil
+    profile_winners["krumhansl"] = max(scores_k, key=scores_k.get)
+    profile_winners["temperley"] = max(scores_t, key=scores_t.get)
+    profile_winners["bellman"] = max(scores_b, key=scores_b.get)
+    
+    return {"key": best_key, "score": best_score, "root": best_root, "mode": best_mode, "details": profile_winners}
 
 def refine_with_harmonic_rules(note_solide_obj, key_fin_obj):
     root_s, mode_s = note_solide_obj['root'], note_solide_obj['mode']
     root_f, mode_f = key_fin_obj['root'], key_fin_obj['mode']
-    
-    # Vérification de la relation de dominante (V -> I)
     is_dominante = (root_f + 5) % 12 == root_s
-    
     if is_dominante and mode_f == "major" and mode_s == "minor":
         return note_solide_obj['key'], "Dominante V"
     if root_s == root_f and mode_s == mode_f:
@@ -147,7 +151,6 @@ def get_full_analysis(file_bytes, file_name):
             res_obj = solve_key(np.mean(chroma, axis=1))
             key, score = res_obj['key'], res_obj['score']
             
-            # Le poids dépend de la certitude moyenne des 3 profils et du volume
             weight = int(score * 100) + int(rms * 500)
             votes[key] += weight
             timeline.append({"Temps": start, "Note": key, "Conf": round(score*100, 1)})
@@ -157,11 +160,7 @@ def get_full_analysis(file_bytes, file_name):
         
         note_solide_str = votes.most_common(1)[0][0]
         ns_parts = note_solide_str.split(' ')
-        note_solide_obj = {
-            "key": note_solide_str, 
-            "root": NOTES_LIST.index(ns_parts[0]), 
-            "mode": ns_parts[1].lower()
-        }
+        note_solide_obj = {"key": note_solide_str, "root": NOTES_LIST.index(ns_parts[0]), "mode": ns_parts[1].lower()}
 
         y_end = y_harm[int(max(0, duration-8)*sr):]
         chroma_end = np.mean(librosa.feature.chroma_cens(y=y_end, sr=sr, tuning=tuning), axis=1)
@@ -169,21 +168,15 @@ def get_full_analysis(file_bytes, file_name):
 
         final_decision, type_res = refine_with_harmonic_rules(note_solide_obj, key_fin_obj)
         is_res = True if type_res != "Stable" else False
-
         conf_finale = int(df_tl[df_tl['Note'] == final_decision]['Conf'].mean())
         if is_res: conf_finale = min(conf_finale + 5, 100)
 
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if conf_finale > 82 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
         
-        # --- GRAPHIQUE POUR TELEGRAM ---
-        fig = px.line(df_tl, x="Temps", y="Note", markers=True, title=f"Stabilité: {file_name}")
+        fig = px.line(df_tl, x="Temps", y="Note", markers=True, title=f"Stabilité: {file_name}", category_orders={"Note": NOTES_ORDER})
         fig.update_traces(line=dict(color="white"), marker=dict(color="white")) 
-        fig.update_layout(
-            template="plotly_dark", paper_bgcolor='#0e1117', plot_bgcolor='#0e1117',
-            yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER},
-            margin=dict(l=60, r=30, t=80, b=60)
-        )
+        fig.update_layout(template="plotly_dark", paper_bgcolor='#0e1117', plot_bgcolor='#0e1117', margin=dict(l=60, r=30, t=80, b=60))
 
         res = {
             "file_name": file_name, 
@@ -193,6 +186,7 @@ def get_full_analysis(file_bytes, file_name):
             "note_solide": note_solide_str, 
             "is_res": is_res, 
             "timeline": timeline,
+            "profiles_final": key_fin_obj['details'], # On prend les détails de la fin pour le rapport
             "plot_bytes": fig.to_image(format="png", width=1200, height=600, scale=2)
         }
         
@@ -205,7 +199,7 @@ def get_full_analysis(file_bytes, file_name):
 # --- INTERFACE ---
 st.title("🎧 RCDJ228 Key Ultimate PRO (Multi-Profile)")
 
-files = st.file_uploader(f"📂 CHARGER LES FICHIERS (Analyse: 180s/fichier)", accept_multiple_files=True, type=['mp3', 'wav', 'flac'])
+files = st.file_uploader(f"📂 CHARGER LES FICHIERS", accept_multiple_files=True, type=['mp3', 'wav', 'flac'])
 
 if files:
     total = len(files)
@@ -226,43 +220,33 @@ if files:
                     <div class="final-decision-box" style="background:{data['rec']['bg']};">
                         <h1 style="font-size:4.5em; margin:0; font-weight:900;">{data['rec']['note']}</h1>
                         <h2 style="margin:0;">CAMELOT: {get_camelot_pro(data['rec']['note'])} • CERTITUDE: {data['rec']['conf']}%</h2>
-                        <p style="font-weight:bold; opacity:0.8;">MODE : {data['rec']['type'].upper()} (CONSENSUS)</p>
-                    </div>
-                    <div class="solid-note-box">
-                        💎 STABILITÉ : <b>{data['note_solide']}</b> | RELATION : <b>{data['rec']['type']}</b> | TUNING : <b>{data['tuning']}</b>
                     </div>
                 """, unsafe_allow_html=True)
                 
                 c1, c2, c3 = st.columns(3)
                 with c1: st.markdown(f'<div class="metric-container">BPM<br><span class="value-custom">{data["tempo"]}</span></div>', unsafe_allow_html=True)
                 with c2: get_sine_witness(data['rec']['note'], fid)
-                with c3: st.info(f"Vérification croisée terminée (Krumhansl, Temperley, Bellman)")
+                with c3: st.write("**Détails Profils :**"); st.caption(f"Krum: {data['profiles_final']['krumhansl']} | Temp: {data['profiles_final']['temperley']} | Bell: {data['profiles_final']['bellman']}")
 
-                # --- AFFICHAGE STREAMLIT ---
-                fig_st = px.line(pd.DataFrame(data['timeline']), x="Temps", y="Note", markers=True, template="plotly_dark", 
-                                category_orders={"Note": NOTES_ORDER})
-                fig_st.update_traces(line=dict(color="Cyan"), marker=dict(color="white"))
+                fig_st = px.line(pd.DataFrame(data['timeline']), x="Temps", y="Note", markers=True, template="plotly_dark", category_orders={"Note": NOTES_ORDER})
                 st.plotly_chart(fig_st, use_container_width=True)
 
-            # --- ENVOI TELEGRAM ---
+            # --- ENVOI TELEGRAM AVEC DÉTAILS PROFIL ---
             try:
-                total_seg = len(data['timeline'])
                 main_count = sum(1 for s in data['timeline'] if s['Note'] == data['rec']['note'])
-                stability = int((main_count / total_seg) * 100) if total_seg > 0 else 0
-                trust_icon = "💎" if data['rec']['conf'] > 88 else "✅"
+                stability = int((main_count / len(data['timeline'])) * 100) if len(data['timeline']) > 0 else 0
                 
                 cap = (
                     f"🎧 *RAPPORT HARMONIQUE PRO*\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"📂 *FICHIER :* `{data['file_name']}`\n"
-                    f"🎹 *RÉSULTAT :* *{data['rec']['note']}*\n"
-                    f"├─ Camelot : `{get_camelot_pro(data['rec']['note'])}` 🌀\n"
-                    f"├─ Certitude : `{data['rec']['conf']}%` {trust_icon}\n"
-                    f"├─ Relation : `{data['rec']['type']}`\n"
-                    f"└─ Stabilité : `{stability}%` 🔥\n\n"
-                    f"⏱ *TEMPO :* `{data['tempo']} BPM` | `180s`\n"
-                    f"🛡 *MÉTHODE :* `Vérification Croisée (3 Profils)`\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎹 *RÉSULTAT :* *{data['rec']['note']}* ({get_camelot_pro(data['rec']['note'])})\n"
+                    f"├─ Certitude : `{data['rec']['conf']}%` | BPM : `{data['tempo']}`\n"
+                    f"└─ Stabilité : `{stability}%` | Mode : `{data['rec']['type']}`\n\n"
+                    f"🛡 *DÉTAILS DES PROFILS :*\n"
+                    f"├─ 🧩 *Krumhansl :* `{data['profiles_final']['krumhansl']}`\n"
+                    f"├─ 📐 *Temperley :* `{data['profiles_final']['temperley']}`\n"
+                    f"└─ 🔔 *Bellman :* `{data['profiles_final']['bellman']}`\n\n"
                     f"🚀 *Généré par RCDJ228 Key Ultimate*"
                 )
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", 
@@ -274,7 +258,7 @@ if files:
         prog_bar.progress((total - idx) / total)
         gc.collect()
 
-    status_text.text(f"✅ Analyse de {total} fichiers terminée.")
+    status_text.text(f"✅ Analyse terminée.")
 
 if st.sidebar.button("🧹 VIDER LE CACHE"):
     st.cache_data.clear()
