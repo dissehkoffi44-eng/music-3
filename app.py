@@ -55,19 +55,21 @@ st.markdown("""
 def apply_perceptual_filter(y, sr):
     """Simule la courbe de réponse fréquentielle humaine."""
     nyq = 0.5 * sr
-    # On isole la plage 100Hz - 5000Hz (là où l'oreille perçoit les notes)
     low, high = 100 / nyq, 5000 / nyq
     b, a = butter(4, [low, high], btype='band')
     return lfilter(b, a, y)
 
 def get_enhanced_chroma(y, sr, tuning):
     """Extrait l'empreinte harmonique purifiée."""
-    # Séparation Harmonique / Percussive (on jette les batteries)
+    # Séparation Harmonique / Percussive
     y_harm = librosa.effects.harmonic(y, margin=4.0)
+    
     # CQT avec haute résolution (24 bins par octave) pour un meilleur tuning
     chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr, tuning=tuning, n_chroma=12, bins_per_octave=24)
-    # Masquage souple pour supprimer le bruit de fond spectral
-    chroma = librosa.util.softmask(chroma, librosa.segment.recurrence_filter(chroma, mode='affinity'))
+    
+    # Correction de l'erreur : Utilisation de nn_filter pour le lissage au lieu de recurrence_filter
+    chroma = librosa.decompose.nn_filter(chroma, aggregate=np.median, metric='cosine')
+    
     return chroma
 
 def solve_key_logic(chroma_vector):
@@ -75,21 +77,18 @@ def solve_key_logic(chroma_vector):
     best_score, best_key, best_root, best_mode = -1, "", 0, "major"
     winners = {}
 
-    # Normalisation du vecteur pour l'oreille
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
 
     for p_name, p_data in PROFILES.items():
         p_max, p_note = -1, ""
         for mode in ["major", "minor"]:
             for i in range(12):
-                # Calcul de corrélation de Pearson
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
                 note_str = f"{NOTES_LIST[i]} {mode}"
                 
                 if score > p_max:
                     p_max, p_note = score, note_str
                 
-                # Bonus pour Bellman (plus proche de la perception humaine moderne)
                 total_score = score * 1.2 if p_name == "bellman" else score
                 if total_score > best_score:
                     best_score, best_root, best_mode, best_key = total_score, i, mode, note_str
@@ -108,7 +107,7 @@ def get_camelot(key_str):
 def play_chord_button(note_mode, uid):
     if not note_mode or " " not in note_mode: return ""
     n, m = note_mode.split(' ')
-    js_id = f"btn_{uid}".replace(".","").replace("#","s")
+    js_id = f"btn_{uid}".replace(".","").replace("#","s").replace("-","_")
     return components.html(f"""
     <button id="{js_id}" style="background:#6366F1;color:white;border:none;border-radius:12px;padding:12px;cursor:pointer;font-weight:bold;width:100%;">🔊 TESTER {n} {m.upper()}</button>
     <script>
@@ -131,21 +130,18 @@ def play_chord_button(note_mode, uid):
 @st.cache_data(show_spinner=False)
 def process_audio(file_bytes, file_name):
     try:
-        # Chargement et Tuning
         y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
         tuning = librosa.estimate_tuning(y=y, sr=sr)
         duration = librosa.get_duration(y=y, sr=sr)
         
-        # Filtrage Perceptif
         y_filt = apply_perceptual_filter(y, sr)
         
-        # Analyse par segments (pour la timeline et la stabilité)
         step, timeline = 8, []
         votes = Counter()
         
         for start in range(0, int(duration) - step, step):
             y_seg = y_filt[int(start*sr):int((start+step)*sr)]
-            if np.max(np.abs(y_seg)) < 0.01: continue # Skip silence
+            if np.max(np.abs(y_seg)) < 0.01: continue 
             
             chroma = get_enhanced_chroma(y_seg, sr, tuning)
             res = solve_key_logic(np.mean(chroma, axis=1))
@@ -156,19 +152,15 @@ def process_audio(file_bytes, file_name):
 
         if not timeline: return {"error": "Audio trop court ou silencieux"}
 
-        # Décision Finale
         final_key = votes.most_common(1)[0][0]
         avg_conf = int(pd.DataFrame(timeline)[pd.DataFrame(timeline)['Note'] == final_key]['Conf'].mean())
         
-        # Tempo
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         
-        # Graphique Plotly
         df_tl = pd.DataFrame(timeline)
         fig = px.line(df_tl, x="Temps", y="Note", markers=True, category_orders={"Note": NOTES_ORDER}, template="plotly_dark")
         fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=30,b=0))
         
-        # Rapport complet
         full_chroma = get_enhanced_chroma(y, sr, tuning)
         final_details = solve_key_logic(np.mean(full_chroma, axis=1))
 
@@ -193,7 +185,8 @@ if uploaded_files:
     container = st.container()
     
     for i, f in enumerate(uploaded_files):
-        res = process_audio(f.read(), f.name)
+        file_data = f.read()
+        res = process_audio(file_data, f.name)
         
         if "error" in res:
             st.error(f"Erreur sur {f.name}: {res['error']}")
@@ -219,7 +212,6 @@ if uploaded_files:
             
             st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", markers=True, category_orders={"Note": NOTES_ORDER}, template="plotly_dark"), use_container_width=True)
 
-            # Envoi Telegram
             try:
                 cap = f"🎧 *RAPPORT PRO*\n📂 `{res['name']}`\n🎹 *{res['key']}* ({res['camelot']})\n🔥 Confiance: `{res['conf']}%`"
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", 
