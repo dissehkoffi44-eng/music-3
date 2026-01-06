@@ -56,7 +56,7 @@ st.markdown("""
         justify-content: center;
         transition: 0.3s;
     }
-    .metric-container:hover { border-color: #6366F1; }
+    .metric-container:hover { border-color: #FFFFFF; }
     
     .metric-label { font-size: 0.8em; color: #888; letter-spacing: 1px; margin-bottom: 5px; text-transform: uppercase; }
     .value-custom { font-size: 1.8em; font-weight: 800; color: #FFFFFF; }
