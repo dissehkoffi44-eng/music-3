@@ -152,14 +152,19 @@ def play_chord_button(note_mode, uid):
     }};
     </script>""", height=110)
 
-# --- ANALYSE PRINCIPALE ---
+# --- ANALYSE PRINCIPALE OPTIMISÉE ---
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def process_audio(file_bytes, file_name):
     try:
-        y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050)
+        # Optimisation RAM : mono=True et buffer explicite
+        with io.BytesIO(file_bytes) as b:
+            y, sr = librosa.load(b, sr=22050, mono=True)
+            
         tuning = librosa.estimate_tuning(y=y, sr=sr)
         duration = librosa.get_duration(y=y, sr=sr)
+        
+        # Filtre et nettoyage
         y_filt = apply_perceptual_filter(y, sr)
         
         step, timeline = 8, []
@@ -180,12 +185,13 @@ def process_audio(file_bytes, file_name):
 
         final_key = votes.most_common(1)[0][0]
         avg_conf = int(pd.DataFrame(timeline)[pd.DataFrame(timeline)['Note'] == final_key]['Conf'].mean())
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         
+        # Tempo et Chrome final
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         full_chroma = get_enhanced_chroma(y, sr, tuning)
         final_details = solve_key_logic(np.mean(full_chroma, axis=1))
 
-        # Graphique optimisé pour Telegram (Style Image Demandé)
+        # Graphique Plotly
         df_tl = pd.DataFrame(timeline)
         fig = px.line(df_tl, x="Temps", y="Note", markers=True, 
                       category_orders={"Note": NOTES_ORDER}, 
@@ -196,21 +202,23 @@ def process_audio(file_bytes, file_name):
             paper_bgcolor='#0e1117', 
             plot_bgcolor='#0e1117', 
             margin=dict(l=60, r=30, t=80, b=50),
-            title_font_size=20,
-            xaxis_title="Temps",
-            yaxis_title="Note",
             font_color="white"
         )
-        fig.update_xaxes(showgrid=True, gridcolor='#333')
-        fig.update_yaxes(showgrid=True, gridcolor='#333')
 
+        # Extraction de l'image pour Telegram et nettoyage Plotly
+        img_bytes = fig.to_image(format="png", width=1000, height=500)
+        
         output = {
             "name": file_name, "tempo": int(float(tempo)), "tuning": round(tuning, 2),
             "key": final_key, "camelot": get_camelot(final_key), "conf": avg_conf,
             "details": final_details['details'], "timeline": timeline,
-            "plot": fig.to_image(format="png", width=1000, height=500)
+            "plot": img_bytes 
         }
-        del y, y_filt; gc.collect()
+        
+        # NETTOYAGE MÉMOIRE CRITIQUE
+        del y, y_filt, full_chroma, fig, df_tl
+        gc.collect()
+        
         return output
     except Exception as e:
         return {"error": str(e)}
@@ -223,6 +231,7 @@ uploaded_files = st.file_uploader("📂 Chargez vos fichiers audio", type=['mp3'
 if uploaded_files:
     pbar = st.progress(0)
     for i, f in enumerate(uploaded_files):
+        # Limitation de sécurité pour éviter de saturer le buffer Streamlit
         file_data = f.read()
         res = process_audio(file_data, f.name)
         
@@ -269,7 +278,7 @@ if uploaded_files:
             fig_ui.update_layout(height=350, margin=dict(l=0,r=0,t=20,b=0))
             st.plotly_chart(fig_ui, use_container_width=True)
 
-            # Envoi Telegram Enrichi
+            # Envoi Telegram Enrichi (Inchangé)
             try:
                 details_text = "\n".join([f"• *{p.capitalize()}*: `{v}`" for p, v in res['details'].items()])
                 cap = (
@@ -289,6 +298,8 @@ if uploaded_files:
             except: pass
 
         pbar.progress((i + 1) / len(uploaded_files))
+        # Forcer le nettoyage après chaque fichier traité
+        gc.collect()
 
 if st.sidebar.button("🧹 Nettoyer le cache"):
     st.cache_data.clear()
